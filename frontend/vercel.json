@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://javamsainterviewer-backend.onrender.com/api/:path*"
+      "destination": "https://javamsainterviewer.onrender.com/api/:path*"
     },
     {
       "source": "/ws/:path*",
-      "destination": "https://javamsainterviewer-backend.onrender.com/ws/:path*"
+      "destination": "https://javamsainterviewer.onrender.com/ws/:path*"
     }
   ]
 }
