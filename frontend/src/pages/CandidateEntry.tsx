@@ -1,19 +1,49 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { startSession } from '../api/sessions'
+
+type BackendState = 'checking' | 'waking' | 'ready' | 'timeout'
 
 export default function CandidateEntry() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
-  const [loadingMsg, setLoadingMsg] = useState('Starting...')
   const [error, setError] = useState('')
+  const [backendState, setBackendState] = useState<BackendState>('checking')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const startedAt = useRef(Date.now())
 
-  // Also warm up the backend when this page loads (in case user navigated
-  // directly to /start without visiting the landing page first)
-  React.useEffect(() => {
-    fetch('/api/challenges').catch(() => {})
+  // Poll /api/challenges until the backend responds 200.
+  // Render free tier can take up to 60s to wake from sleep.
+  // We gate the submit button on backend readiness so the user
+  // never attempts login against a sleeping server.
+  useEffect(() => {
+    let attempts = 0
+
+    const ping = async () => {
+      attempts++
+      try {
+        const res = await fetch('/api/challenges', { signal: AbortSignal.timeout(8000) })
+        if (res.ok) {
+          clearInterval(pollRef.current!)
+          setBackendState('ready')
+          return
+        }
+      } catch {}
+
+      const elapsed = Date.now() - startedAt.current
+      if (elapsed > 90_000) {
+        clearInterval(pollRef.current!)
+        setBackendState('timeout')
+      } else if (attempts >= 2) {
+        setBackendState('waking')
+      }
+    }
+
+    ping()
+    pollRef.current = setInterval(ping, 4000)
+    return () => clearInterval(pollRef.current!)
   }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -22,38 +52,57 @@ export default function CandidateEntry() {
       setError('Name and email are required')
       return
     }
+    if (backendState !== 'ready') return
     setLoading(true)
-    setLoadingMsg('Starting...')
     setError('')
 
-    const attempt = async (retries: number): Promise<void> => {
-      try {
-        const res = await startSession(name.trim(), email.trim())
-        localStorage.setItem('token', res.token)
-        localStorage.setItem('sessionId', res.sessionId)
-        localStorage.setItem('candidateName', res.candidateName)
-        navigate('/challenge')
-      } catch (err: any) {
-        const isTimeout = !err.response || err.code === 'ECONNABORTED' || err.code === 'ERR_NETWORK'
-        if (retries > 0 && isTimeout) {
-          setLoadingMsg('Backend is waking up, retrying...')
-          await new Promise(r => setTimeout(r, 5000))
-          return attempt(retries - 1)
-        }
-        if (isTimeout) {
-          setError('Backend is still starting up. Please wait 30 seconds and try again.')
-        } else {
-          setError(`Failed to start session: ${err.response?.data?.message ?? err.message}`)
-        }
-      }
-    }
-
     try {
-      await attempt(2)
+      const res = await startSession(name.trim(), email.trim())
+      localStorage.setItem('token', res.token)
+      localStorage.setItem('sessionId', res.sessionId)
+      localStorage.setItem('candidateName', res.candidateName)
+      navigate('/challenge')
+    } catch (err: any) {
+      setError(err.response?.data?.message ?? err.message ?? 'Failed to start session')
     } finally {
       setLoading(false)
     }
   }
+
+  const backendBadge = () => {
+    switch (backendState) {
+      case 'checking':
+        return (
+          <span className="flex items-center gap-1.5 text-[var(--muted)]">
+            <span className="animate-spin w-3 h-3 border border-current border-t-transparent rounded-full" />
+            Checking backend...
+          </span>
+        )
+      case 'waking':
+        return (
+          <span className="flex items-center gap-1.5 text-[var(--amber)]">
+            <span className="animate-pulse w-2 h-2 rounded-full bg-[var(--amber)]" />
+            Backend waking up — usually takes 20–40s
+          </span>
+        )
+      case 'ready':
+        return (
+          <span className="flex items-center gap-1.5 text-[var(--green)]">
+            <span className="w-2 h-2 rounded-full bg-[var(--green)]" />
+            Backend ready
+          </span>
+        )
+      case 'timeout':
+        return (
+          <span className="flex items-center gap-1.5 text-[var(--red)]">
+            <span className="w-2 h-2 rounded-full bg-[var(--red)]" />
+            Backend unreachable — try refreshing
+          </span>
+        )
+    }
+  }
+
+  const canSubmit = backendState === 'ready' && !loading
 
   return (
     <div className="min-h-screen bg-[var(--bg)] flex items-center justify-center p-4">
@@ -66,6 +115,9 @@ export default function CandidateEntry() {
         </div>
 
         <form onSubmit={handleSubmit} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-8 space-y-5">
+          {/* Backend status indicator */}
+          <div className="text-[10px] pb-1">{backendBadge()}</div>
+
           <div>
             <label className="block text-xs text-[var(--muted)] mb-1.5">Full Name</label>
             <input
@@ -95,13 +147,18 @@ export default function CandidateEntry() {
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full bg-[var(--blue)] hover:bg-blue-500 disabled:opacity-50 text-white font-semibold rounded-lg py-3 text-sm transition-colors"
+            disabled={!canSubmit}
+            className="w-full bg-[var(--blue)] hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg py-3 text-sm transition-colors"
           >
             {loading ? (
               <span className="flex items-center justify-center gap-2">
                 <span className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
-                {loadingMsg}
+                Starting...
+              </span>
+            ) : backendState !== 'ready' ? (
+              <span className="flex items-center justify-center gap-2">
+                <span className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full opacity-50" />
+                Waiting for backend...
               </span>
             ) : 'Start Assessment →'}
           </button>
