@@ -1,0 +1,26 @@
+name: Keep Backend Alive
+
+on:
+  schedule:
+    # Every 10 minutes — Render free tier sleeps after 15 min of inactivity.
+    # This keeps the backend warm so cold starts don't hit candidates.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping backend
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 55 \
+            https://javamsainterviewer.onrender.com/api/challenges)
+          echo "Response: ${STATUS}"
+          if [ "${STATUS}" -ge 200 ] && [ "${STATUS}" -lt 400 ]; then
+            echo "Backend is awake."
+          else
+            echo "Unexpected status ${STATUS} — Render may be restarting."
+            exit 1
+          fi
